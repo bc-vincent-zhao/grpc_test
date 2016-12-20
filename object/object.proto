@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package object;
+
+service ObjectAccessor {
+    rpc GetObject(ObjectIdentifier) returns (ObjectResponse) {}
+}
+
+message ObjectIdentifier {
+    string account = 1;
+    string container = 2;
+    string path = 3;
+}
+
+message ObjectResponse {
+    string type = 1;
+    string mtime = 2;
+    string etag = 3;
+    bytes content = 4;
+}
