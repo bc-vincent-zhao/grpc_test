@@ -155,7 +155,7 @@ func streamGrpc(loop int) {
 		count++
 		if count >= loop {
 			// we've received all responses, output time and size
-			log.Printf("Through streaming grpc:\t size = %d; duration = %s", r, time.Since(start))
+			log.Printf("Through streaming grpc:\t\t size = %d; duration = %s", r, time.Since(start))
 		}
 	}
 }
