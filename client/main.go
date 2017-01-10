@@ -17,48 +17,56 @@ import (
 
 var (
 	loop      = flag.Int("loop", 10, "loop count for reading object")
-	protocol  = flag.String("protocol", "all", "the protocol to use, http|grpc|all")
 	http_port = flag.Int("http_port", 10001, "the port http endpoint listens on")
 	grpc_port = flag.Int("grpc_port", 10002, "the port grpc endpoint listens on")
+	parallel  = flag.Bool("parallel", false, "send all requests in parallel goroutings")
 )
 
 func main() {
 	flag.Parse()
 
-	if *protocol == "grpc" {
-		getGrpc(*loop)
-	} else if *protocol == "http" {
-		getHttp(*loop)
-	} else {
-		getHttp(*loop)
-		getGrpc(*loop)
-		streamGrpc(*loop)
-	}
+	getHttp(*loop)
+	getGrpc(*loop)
+	streamGrpc(*loop)
 }
 
 func getHttp(loop int) {
 	start := time.Now()
 	client := &http.Client{}
-	var bytes []byte
-	//wg := &sync.WaitGroup{}
-	for i := 0; i < loop; i++ {
-		//wg.Add(1)
-		//go func() {
-		//defer wg.Done()
-		req, _ := http.NewRequest("GET", fmt.Sprintf("http://localhost:%d/http", *http_port), nil)
-		resp, err := client.Do(req)
-		if err != nil {
-			log.Printf("could not get object: %v", err)
-		} else {
-			bytes, _ = ioutil.ReadAll(resp.Body)
-			resp.Body.Close()
-			//log.Printf("got object: %v", string(bytes))
+	if *parallel {
+		rc := make(chan int, loop)
+		for i := 0; i < loop; i++ {
+			go func() {
+				rc <- sendHttpRequest(client)
+			}()
 		}
-		//}()
+		count := 0
+		for r := range rc {
+			count++
+			if count >= loop {
+				// we've received all responses, output time and size
+				log.Printf("Through http: size = %d ;duration = %s", r, time.Since(start))
+				return
+			}
+		}
+	} else {
+		r := 0
+		for i := 0; i < loop; i++ {
+			r = sendHttpRequest(client)
+		}
+		log.Printf("Through http: size = %d ;duration = %s", r, time.Since(start))
 	}
-	//wg.Wait()
-	duration := time.Since(start)
-	log.Printf("Through http: size = %v ;duration = %v", len(bytes), duration)
+}
+
+func sendHttpRequest(client *http.Client) int {
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://localhost:%d/http", *http_port), nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Fatalf("could not get object: %v", err)
+	}
+	bytes, _ := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	return len(bytes)
 }
 
 func getGrpc(loop int) {
@@ -70,24 +78,37 @@ func getGrpc(loop int) {
 	defer conn.Close()
 	c := pb.NewObjectAccessorClient(conn)
 
-	var r *pb.ObjectResponse
-	//wg := &sync.WaitGroup{}
-	for i := 0; i < loop; i++ {
-		//wg.Add(1)
-		//go func() {
-		//defer wg.Done()
-		r, err = c.GetObject(context.Background(), &pb.ObjectIdentifier{"test", "manual", "dummy"})
-		if err != nil {
-			log.Printf("could not get object: %v", err)
-		} else {
-			_ = r.Content
-			//log.Printf("got object: %v", r)
+	if *parallel {
+		rc := make(chan int, loop)
+		for i := 0; i < loop; i++ {
+			go func() {
+				rc <- unaryGrpc(c)
+			}()
 		}
-		//}()
+		count := 0
+		for r := range rc {
+			count++
+			if count >= loop {
+				// we've received all responses, output time and size
+				log.Printf("Through unary grpc: size = %d ;duration = %s", r, time.Since(start))
+				return
+			}
+		}
+	} else {
+		r := 0
+		for i := 0; i < loop; i++ {
+			r = unaryGrpc(c)
+		}
+		log.Printf("Through unary grpc: size = %d ;duration = %s", r, time.Since(start))
 	}
-	//wg.Wait()
-	duration := time.Since(start)
-	log.Printf("Through grpc, size = %v; duration = %v", len(r.Content), duration)
+}
+
+func unaryGrpc(c pb.ObjectAccessorClient) int {
+	r, err := c.GetObject(context.Background(), &pb.ObjectIdentifier{"test", "manual", "dummy"})
+	if err != nil {
+		log.Fatalf("could not get object: %v", err)
+	}
+	return len(r.Content)
 }
 
 func streamGrpc(loop int) {
@@ -103,21 +124,20 @@ func streamGrpc(loop int) {
 		log.Fatalf("can't get stream client %v", err)
 	}
 
-	waitc := make(chan struct{})
+	rc := make(chan int, loop)
 	go func() {
 		var in *pb.ObjectResponse
 		var err error
 		for {
 			in, err = stream.Recv()
 			if err == io.EOF {
-				close(waitc)
+				close(rc)
 				return
 			}
 			if err != nil {
-				log.Printf("Failed to receive object %v", err)
-				return
+				log.Fatalf("Failed to receive object %v", err)
 			}
-			_ = in.Content
+			rc <- len(in.Content)
 		}
 	}()
 	for i := 0; i < loop; i++ {
@@ -126,7 +146,12 @@ func streamGrpc(loop int) {
 		}
 	}
 	stream.CloseSend()
-	<-waitc
-	duration := time.Since(start)
-	log.Printf("Through grpc stream, duration = %v", duration)
+	count := 0
+	for r := range rc {
+		count++
+		if count >= loop {
+			// we've received all responses, output time and size
+			log.Printf("Through streaming grpc: size = %d; duration = %s", r, time.Since(start))
+		}
+	}
 }
