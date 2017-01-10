@@ -32,42 +32,54 @@ var (
 	dataFile  = flag.String("data_file", "testdata/content_data", "Some binary content to stream")
 	http_port = flag.Int("http_port", 10001, "the port http endpoint listens on")
 	grpc_port = flag.Int("grpc_port", 10002, "the port grpc endpoint listens on")
+	verbose   = flag.Bool("verbose", false, "Log as much as debug info as possible, this slows down response time")
+
+	content = []byte{}
+	hash    = ""
+	mtime   = ""
+	err     error
 )
 
 func main() {
 	flag.Parse()
 
+	content, hash, mtime, err = readData()
+	if err != nil {
+		log.Fatalf("failed to start client %v", err)
+	}
+
 	go func() {
-		// setup grpc server
-		lis, err := net.Listen("tcp", fmt.Sprintf(":%d", *grpc_port))
-		if err != nil {
-			grpclog.Fatalf("failed to listen: %v", err)
-		}
-		var opts []grpc.ServerOption
-		if *tls {
-			creds, err := credentials.NewServerTLSFromFile(*certFile, *keyFile)
-			if err != nil {
-				grpclog.Fatalf("Failed to generate credentials %v", err)
-			}
-			opts = []grpc.ServerOption{grpc.Creds(creds)}
-		}
-		grpcServer := grpc.NewServer(opts...)
-		reflection.Register(grpcServer)
-		pb.RegisterObjectAccessorServer(grpcServer, newServer())
-		grpcServer.Serve(lis)
+		// setup http server
+		http.HandleFunc("/http", handleHttp)
+		log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *http_port), nil))
 	}()
 
-	// setup http server
-	http.HandleFunc("/http", handleHttp)
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *http_port), nil))
+	// setup grpc server
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", *grpc_port))
+	if err != nil {
+		grpclog.Fatalf("failed to listen: %v", err)
+	}
+	var opts []grpc.ServerOption
+	if *tls {
+		creds, err := credentials.NewServerTLSFromFile(*certFile, *keyFile)
+		if err != nil {
+			grpclog.Fatalf("Failed to generate credentials %v", err)
+		}
+		opts = []grpc.ServerOption{grpc.Creds(creds)}
+	}
+	grpcServer := grpc.NewServer(opts...)
+	pb.RegisterObjectAccessorServer(grpcServer, newServer())
+	reflection.Register(grpcServer)
+	grpcServer.Serve(lis)
+
 }
 
 func handleHttp(w http.ResponseWriter, r *http.Request) {
-	content, hash, mtime, err := readData()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	if *verbose {
+		addr := r.RemoteAddr
+		log.Printf("remote addr: %v", addr)
 	}
+
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Last-Modified", mtime)
 	w.Header().Set("Etag", hash)
@@ -82,22 +94,43 @@ func newServer() *server {
 }
 
 func (s *server) GetObject(ctx context.Context, id *pb.ObjectIdentifier) (*pb.ObjectResponse, error) {
-	bytes, hash, mtime, err := readData()
-	if err != nil {
-		return nil, err
+	if *verbose {
+		pr, ok := peer.FromContext(ctx)
+		if ok {
+			log.Printf("Unary: remote addr: %v", pr.Addr)
+		}
 	}
-
-	pr, ok := peer.FromContext(ctx)
-	if ok {
-		log.Printf("remote addr: %v", pr.Addr)
-	}
-
 	return &pb.ObjectResponse{
 		Type:    "application/octet-stream",
 		Mtime:   mtime,
 		Etag:    hash,
-		Content: bytes,
+		Content: content,
 	}, nil
+}
+
+func (s *server) GetObjectStream(stream pb.ObjectAccessor_GetObjectStreamServer) error {
+	if *verbose {
+		pr, ok := peer.FromContext(stream.Context())
+		if ok {
+			log.Printf("streaming: remote addr: %v", pr.Addr)
+		}
+	}
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		r := &pb.ObjectResponse{
+			Type:    "application/octet-stream",
+			Mtime:   mtime,
+			Etag:    hash,
+			Content: content,
+		}
+		stream.Send(r)
+	}
 }
 
 func readData() (content []byte, hash, mtime string, err error) {

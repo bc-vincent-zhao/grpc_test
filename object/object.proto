@@ -4,6 +4,7 @@ package object;
 
 service ObjectAccessor {
     rpc GetObject(ObjectIdentifier) returns (ObjectResponse) {}
+    rpc GetObjectStream(stream ObjectIdentifier) returns (stream ObjectResponse) {}
 }
 
 message ObjectIdentifier {
