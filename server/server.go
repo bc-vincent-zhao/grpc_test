@@ -14,7 +14,7 @@ import (
 	"os"
 	"time"
 
-	pb "github.com/bc-vincent-zhao/grpc_tryout/object"
+	pb "github.com/bc-vincent-zhao/grpc_test/object"
 
 	"golang.org/x/net/context"
 

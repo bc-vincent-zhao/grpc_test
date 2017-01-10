@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/net/context"
 
-	pb "github.com/bc-vincent-zhao/grpc_tryout/object"
+	pb "github.com/bc-vincent-zhao/grpc_test/object"
 	"google.golang.org/grpc"
 )
 
